@@ -1,4 +1,4 @@
-﻿import { jsPDF } from "jspdf";
+import { jsPDF } from "jspdf";
 import { formatZAR } from "./whatsapp";
 
 export async function generateGN404Certificate(ledger: any): Promise<Blob> {

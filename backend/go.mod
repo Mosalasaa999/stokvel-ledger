@@ -1,4 +1,4 @@
-﻿module github.com/Mosalasaa999/stokvel-ledger
+module github.com/Mosalasaa999/stokvel-ledger
 
 go 1.22
 

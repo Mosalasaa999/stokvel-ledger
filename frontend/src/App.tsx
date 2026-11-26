@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ShieldCheck, Upload, AlertTriangle, RotateCcw, Share2, FileDown, ExternalLink } from "lucide-react";
 import { useLedgerStore } from "./store/useLedgerStore";
 import { buildGroupWhatsAppDigest, buildNonPunitiveNudge, chromeIntentUrl, formatZAR, isAndroidWhatsAppWebView } from "./lib/whatsapp";

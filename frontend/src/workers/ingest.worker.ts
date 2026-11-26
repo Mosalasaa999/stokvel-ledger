@@ -1,4 +1,4 @@
-﻿import * as pdfjsLib from "pdfjs-dist";
+import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { unzipSync, strFromU8 } from "fflate";
 import {
@@ -21,7 +21,7 @@ self.onmessage = async (e: MessageEvent<{ buffer: ArrayBuffer; fileName: string;
     const ofxName = Object.keys(files).find((n) => n.toLowerCase().endsWith(".ofx"));
     if (ofxName) {
       const text = strFromU8(files[ofxName]);
-      self.postMessage({ status: "OK", bankCode: detectBankCode(text), fileSha256, transactions: parseOFX(text) } satisfies IngestResult);
+      (self as any).postMessage({ status: "OK", bankCode: detectBankCode(text), fileSha256, transactions: parseOFX(text) } satisfies IngestResult);
       return;
     }
   }
@@ -29,7 +29,7 @@ self.onmessage = async (e: MessageEvent<{ buffer: ArrayBuffer; fileName: string;
   if (!isPDF) {
     const text = new TextDecoder().decode(bytes);
     const txs = fileName.toLowerCase().endsWith(".ofx") || text.includes("<OFX>") ? parseOFX(text) : parseCSVText(text);
-    self.postMessage({ status: "OK", bankCode: detectBankCode(text), fileSha256, transactions: txs } satisfies IngestResult);
+    (self as any).postMessage({ status: "OK", bankCode: detectBankCode(text), fileSha256, transactions: txs } satisfies IngestResult);
     return;
   }
 
@@ -66,7 +66,7 @@ self.onmessage = async (e: MessageEvent<{ buffer: ArrayBuffer; fileName: string;
     }
 
     if (sampleTextChars / Math.min(3, pdf.numPages) < 40 && hasRasterImages) {
-      self.postMessage({
+      (self as any).postMessage({
         status: "SCANNED_PDF_REJECTED", bankCode: "SCANNED_IMAGE", fileSha256, transactions: [],
         message: "Scanned/photographed PDF detected. Please export the native digital PDF from your banking app."
       } satisfies IngestResult);
@@ -154,7 +154,7 @@ self.onmessage = async (e: MessageEvent<{ buffer: ArrayBuffer; fileName: string;
       if (prev.balance_cents !== null && curr.balance_cents !== null) {
         const expected = prev.balance_cents + (curr.direction === "CREDIT" ? curr.amount_cents : -curr.amount_cents);
         if (expected !== curr.balance_cents) {
-          self.postMessage({
+          (self as any).postMessage({
             status: "CHECKSUM_ERROR", bankCode: detectBankCode(fullHeaderText), fileSha256, transactions,
             checksumDivergentIndex: i,
             message: `Running balance checksum diverged at row ${i + 1} (${curr.tx_date}). Verify rows before committing.`
@@ -164,12 +164,13 @@ self.onmessage = async (e: MessageEvent<{ buffer: ArrayBuffer; fileName: string;
       }
     }
 
-    self.postMessage({ status: "OK", bankCode: detectBankCode(fullHeaderText), fileSha256, transactions } satisfies IngestResult);
+    (self as any).postMessage({ status: "OK", bankCode: detectBankCode(fullHeaderText), fileSha256, transactions } satisfies IngestResult);
   } catch (err: any) {
     if (err?.name === "PasswordException") {
-      self.postMessage({ status: "NEED_PASSWORD", bankCode: "ENCRYPTED_PDF", fileSha256, transactions: [], message: "PDF is password-protected." } satisfies IngestResult);
+      (self as any).postMessage({ status: "NEED_PASSWORD", bankCode: "ENCRYPTED_PDF", fileSha256, transactions: [], message: "PDF is password-protected." } satisfies IngestResult);
       return;
     }
     throw err;
   }
 };
+

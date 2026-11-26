@@ -1,4 +1,4 @@
-﻿import Papa from "papaparse";
+import Papa from "papaparse";
 
 export interface ParsedTransaction {
   tx_date: string;

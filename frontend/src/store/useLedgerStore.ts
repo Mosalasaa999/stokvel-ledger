@@ -1,8 +1,8 @@
-﻿import { create } from "zustand";
+import { create } from "zustand";
 import { persist, createJSONStorage, StateStorage } from "zustand/middleware";
 
 const idbStorage: StateStorage = {
-  getItem: async (name) => new Promise((resolve) => {
+  getItem: async (name: string): Promise<string | null> => new Promise<string | null>((resolve) => {
     const req = indexedDB.open("stokvel_ledger_db", 1);
     req.onupgradeneeded = () => req.result.createObjectStore("kv");
     req.onsuccess = () => {
@@ -13,7 +13,7 @@ const idbStorage: StateStorage = {
     };
     req.onerror = () => resolve(null);
   }),
-  setItem: async (name, value) => new Promise((resolve) => {
+  setItem: async (name: string, value: string): Promise<void> => new Promise<void>((resolve) => {
     const req = indexedDB.open("stokvel_ledger_db", 1);
     req.onupgradeneeded = () => req.result.createObjectStore("kv");
     req.onsuccess = () => {
@@ -23,7 +23,7 @@ const idbStorage: StateStorage = {
     };
     req.onerror = () => resolve();
   }),
-  removeItem: async (name) => new Promise((resolve) => {
+  removeItem: async (name: string): Promise<void> => new Promise<void>((resolve) => {
     const req = indexedDB.open("stokvel_ledger_db", 1);
     req.onupgradeneeded = () => req.result.createObjectStore("kv");
     req.onsuccess = () => {

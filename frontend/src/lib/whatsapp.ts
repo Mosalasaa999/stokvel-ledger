@@ -1,4 +1,4 @@
-﻿export function formatZAR(cents: number): string {
+export function formatZAR(cents: number): string {
   return "R " + (cents / 100).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 

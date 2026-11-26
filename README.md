@@ -1,4 +1,4 @@
-﻿# StokvelLedger — Zero-Custody South African Stokvel Ledger
+# StokvelLedger — Zero-Custody South African Stokvel Ledger
 
 A zero-custody, **100% browser-parsed**, PIN-accessed digital ledger and automated bank-statement reconciler built for South African stokvels, burial societies, and savings clubs at **R0 fixed monthly infrastructure burn**.
 

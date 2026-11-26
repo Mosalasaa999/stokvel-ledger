@@ -1,4 +1,4 @@
-﻿services:
+services:
   - type: web
     name: mosalasa-stokvel-api
     runtime: docker
