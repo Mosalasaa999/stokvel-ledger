@@ -3,6 +3,7 @@ import { ShieldCheck, Upload, AlertTriangle, RotateCcw, Share2, FileDown, Extern
 import { useLedgerStore } from "./store/useLedgerStore";
 import { buildGroupWhatsAppDigest, buildNonPunitiveNudge, chromeIntentUrl, formatZAR, isAndroidWhatsAppWebView } from "./lib/whatsapp";
 import { generateGN404Certificate } from "./lib/pdfExport";
+import { parseStatementLocally } from "./lib/ingestStatement";
 import { CreateGroupForm } from "./components/CreateGroupForm";
 import type { IngestResult } from "./workers/ingestUtils";
 
@@ -18,6 +19,7 @@ export default function App() {
   const [authRole, setAuthRole] = useState<"MEMBER" | "TREASURER">("MEMBER");
   const [inputSlug, setInputSlug] = useState(() => new URLSearchParams(window.location.search).get("g") || slug || "");
   const [errorMsg, setErrorMsg] = useState("");
+  const [isParsing, setIsParsing] = useState(false);
   const [pdfPassword, setPdfPassword] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [previewResult, setPreviewResult] = useState<IngestResult | null>(null);
@@ -34,44 +36,62 @@ export default function App() {
   async function refreshLedger(s: string, t: string) {
     try {
       const res = await fetch(`${API_URL}/v1/groups/${s}/ledger`, { headers: { Authorization: `Bearer ${t}` } });
-      if (res.ok) { const d = await res.json(); setLedger(d); setCachedLedger(d); setApiStatus("online"); }
+      if (res.ok) { const d = await res.json(); setLedger(d); setCachedLedger(d); setApiStatus("online"); setErrorMsg(""); }
     } catch {}
   }
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault(); setErrorMsg("");
-    const res = await fetch(`${API_URL}/v1/groups/${inputSlug}/auth`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ msisdn, pin, role: authRole })
-    });
-    const data = await res.json();
-    if (!res.ok) { setErrorMsg(data.error || "Login failed"); return; }
-    setSession(inputSlug, data.token, data.role);
+    try {
+      const res = await fetch(`${API_URL}/v1/groups/${inputSlug}/auth`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ msisdn, pin, role: authRole })
+      });
+      const data = await res.json();
+      if (!res.ok) { setErrorMsg(data.error || "Login failed"); return; }
+      setSession(inputSlug, data.token, data.role);
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Network error contacting vault");
+    }
   }
 
-  async function runWorkerParse(file: File, password?: string) {
+  async function runLocalParse(file: File, password?: string) {
     setErrorMsg("");
-    const buffer = await file.arrayBuffer();
-    const worker = new Worker(new URL("./workers/ingest.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (ev: MessageEvent<IngestResult>) => {
-      const r = ev.data; worker.terminate();
-      if (r.status === "NEED_PASSWORD") { setPendingFile(file); setNeedPassword(true); return; }
-      if (r.status === "SCANNED_PDF_REJECTED") { setErrorMsg(r.message || "Scanned PDF rejected."); return; }
-      setNeedPassword(false); setPreviewResult(r);
-    };
-    worker.postMessage({ buffer, fileName: file.name, password }, [buffer]);
+    setIsParsing(true);
+    try {
+      const r = await parseStatementLocally(file, password);
+      if (r.status === "NEED_PASSWORD") {
+        setPendingFile(file);
+        setNeedPassword(true);
+      } else if (r.status === "SCANNED_PDF_REJECTED") {
+        setErrorMsg(r.message || "Scanned PDF rejected.");
+      } else {
+        setNeedPassword(false);
+        setPreviewResult(r);
+      }
+    } catch (err: any) {
+      setErrorMsg("Parse error: " + (err?.message || "Could not read file"));
+    } finally {
+      setIsParsing(false);
+    }
   }
 
   async function commitPreviewBatch() {
     if (!previewResult || !token || !slug) return;
-    const res = await fetch(`${API_URL}/v1/groups/${slug}/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ bank_code: previewResult.bankCode, file_sha256: previewResult.fileSha256, transactions: previewResult.transactions })
-    });
-    const data = await res.json();
-    if (!res.ok) { setErrorMsg(data.error || "Import failed"); return; }
-    setPreviewResult(null); refreshLedger(slug, token);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_URL}/v1/groups/${slug}/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ bank_code: previewResult.bankCode, file_sha256: previewResult.fileSha256, transactions: previewResult.transactions })
+      });
+      const data = await res.json();
+      if (!res.ok) { setErrorMsg(data.error || "Import failed"); return; }
+      setPreviewResult(null);
+      refreshLedger(slug, token);
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to commit batch");
+    }
   }
 
   async function handleUndoBatch(batchId: string) {
@@ -83,7 +103,7 @@ export default function App() {
 
   async function handleAssignMember(txId: string, memberId: string, desc: string) {
     if (!memberId) return;
-    const alias = prompt("Enter proxy keyword to remember for future months (or leave blank):", desc.slice(0, 20)) || "";
+    const alias = prompt("Proxy keyword to remember for future months (or leave blank):", desc.slice(0, 20)) || "";
     const res = await fetch(`${API_URL}/v1/groups/${slug}/transactions/${txId}/assign`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -127,7 +147,7 @@ export default function App() {
             <button onClick={() => setViewMode("CREATE")} className={`px-3 py-1.5 rounded ${viewMode === "CREATE" ? "bg-emerald-600" : "bg-[#131E32]"}`}>+ Create New Stokvel</button>
           </div>
           {viewMode === "CREATE" ? (
-            <CreateGroupForm apiUrl={API_URL} onCreated={(s, t) => setSession(s, t, "TREASURER")} />
+            <CreateGroupForm apiUrl={API_URL} onCreated={(s, t) => { setErrorMsg(""); setSession(s, t, "TREASURER"); }} />
           ) : (
             <form onSubmit={handleLogin} className="bg-[#131E32] p-5 rounded-lg border border-slate-800 space-y-4">
               <div className="flex gap-2 text-xs">
@@ -155,17 +175,26 @@ export default function App() {
           {role === "TREASURER" && (
             <div className="bg-[#131E32] p-4 rounded-lg border border-slate-800 space-y-3">
               <div className="font-semibold text-sm flex items-center gap-2"><Upload className="w-4 h-4 text-emerald-400" /> Import Bank Statement (PDF / CSV / OFX)</div>
-              <input type="file" accept=".pdf,.csv,.ofx,.zip" onChange={(e) => { const f = e.target.files?.[0]; if (f) runWorkerParse(f); }} className="text-xs block w-full" />
+              <input type="file" accept=".pdf,.csv,.ofx,.zip" onChange={(e) => { const f = e.target.files?.[0]; if (f) runLocalParse(f); e.target.value = ""; }} className="text-xs block w-full" />
+              {isParsing && <div className="text-xs text-emerald-300">Parsing statement locally in your browser...</div>}
               {needPassword && pendingFile && (
                 <div className="flex gap-2">
                   <input type="password" value={pdfPassword} onChange={(e) => setPdfPassword(e.target.value)} placeholder="PDF Password (discarded locally)" className="flex-1 p-2 rounded bg-[#0A1120] border border-amber-500 text-xs" />
-                  <button onClick={() => runWorkerParse(pendingFile, pdfPassword)} className="px-3 py-2 rounded bg-amber-500 text-black text-xs font-bold">Unlock</button>
+                  <button onClick={() => runLocalParse(pendingFile, pdfPassword)} className="px-3 py-2 rounded bg-amber-500 text-black text-xs font-bold">Unlock</button>
                 </div>
               )}
               {previewResult && (
                 <div className="p-3 rounded bg-[#0A1120] border border-slate-700 space-y-2">
-                  <div className="text-xs text-emerald-400 font-semibold">{previewResult.bankCode} • {previewResult.transactions.length} rows</div>
+                  <div className="text-xs text-emerald-400 font-semibold">{previewResult.bankCode} • {previewResult.transactions.length} rows extracted</div>
                   {previewResult.status === "CHECKSUM_ERROR" && <div className="text-xs text-amber-400">{previewResult.message}</div>}
+                  <div className="max-h-40 overflow-y-auto space-y-1 text-[11px] text-slate-300">
+                    {previewResult.transactions.slice(0, 8).map((tx, i) => (
+                      <div key={i} className="flex justify-between border-b border-slate-800 pb-1">
+                        <span className="truncate mr-2">{tx.tx_date} • {tx.raw_description}</span>
+                        <span className={tx.direction === "CREDIT" ? "text-emerald-400" : "text-amber-400"}>{tx.direction === "CREDIT" ? "+" : "-"}{formatZAR(tx.amount_cents)}</span>
+                      </div>
+                    ))}
+                  </div>
                   <button onClick={commitPreviewBatch} className="px-4 py-2 rounded bg-emerald-600 text-xs font-bold">Reconcile & Commit</button>
                 </div>
               )}
