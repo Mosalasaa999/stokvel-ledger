@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/creategroupform.tsx","./src/lib/pdfexport.ts","./src/lib/whatsapp.ts","./src/store/useledgerstore.ts","./src/workers/ingestutils.ts"],"errors":true,"version":"5.9.3"}

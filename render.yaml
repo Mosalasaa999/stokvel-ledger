@@ -1,0 +1,26 @@
+﻿services:
+  - type: web
+    name: stokvel-ledger-api
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: frankfurt
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true
+
+  - type: web
+    name: stokvel-ledger-pwa
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: stokvel-ledger-api
+          property: url

@@ -1,0 +1,7 @@
+﻿node_modules/
+frontend/dist/
+backend/stokvel-api.exe
+.env
+*.pdf
+*.csv
+*.ofx
