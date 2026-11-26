@@ -1,7 +1,7 @@
 ﻿services:
   - type: web
-    name: stokvel-ledger-api
-    env: docker
+    name: mosalasa-stokvel-api
+    runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
     region: frankfurt
@@ -16,11 +16,11 @@
     name: stokvel-ledger-pwa
     runtime: static
     rootDir: frontend
-    buildCommand: npm install && npm run build
+    buildCommand: npm install && VITE_API_URL="https://${API_HOST}.onrender.com" npm run build
     staticPublishPath: dist
     envVars:
-      - key: VITE_API_URL
+      - key: API_HOST
         fromService:
           type: web
-          name: stokvel-ledger-api
-          property: url
+          name: mosalasa-stokvel-api
+          property: host
