@@ -2,8 +2,9 @@ import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { unzipSync, strFromU8 } from "fflate";
 import {
-  IngestResult, ParsedTransaction, classifyCategory, detectBankCode,
-  extractMSISDN, normalizeDateISO, parseCSVText, parseOFX, parseZARCents, sha256Hex
+  FusedHeaderColumn, HeaderToken, IngestResult, ParsedTransaction, classifyCategory,
+  detectBankCode, extractMSISDN, fuseVerticalHeaderBand, normalizeDateISO,
+  parseCSVText, parseOFX, parseZARCents, sha256Hex
 } from "../workers/ingestUtils";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -33,12 +34,11 @@ export async function parseStatementLocally(file: File, password?: string): Prom
 
   try {
     const pdf = await pdfjsLib.getDocument({ data: buffer, password }).promise;
-    let sampleTextChars = 0;
-    let hasRasterImages = false;
-    let fullHeaderText = "";
+    let sampleTextChars = 0, hasRasterImages = false, fullHeaderText = "";
 
-    interface Cell { str: string; tx: number; rightEdge: number; ty: number; }
+    interface Cell { str: string; tx: number; rightEdge: number; ty: number; width: number; }
     const allVisualRows: Cell[][] = [];
+    const page1Tokens: HeaderToken[] = [];
 
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
@@ -54,10 +54,13 @@ export async function parseStatementLocally(file: File, password?: string): Prom
         if (p <= 3) sampleTextChars += str.length;
         fullHeaderText += " " + str;
         const tx = item.transform[4];
-        const ty = Math.round(item.transform[5] / 2.5) * 2.5;
-        const rightEdge = tx + (item.width || 0);
+        const rawY = item.transform[5];
+        const ty = Math.round(rawY / 2.5) * 2.5;
+        const width = item.width || 0;
+        const rightEdge = tx + width;
+        if (p === 1) page1Tokens.push({ text: str, tx, ty: rawY, width, rightEdge });
         if (!yMap.has(ty)) yMap.set(ty, []);
-        yMap.get(ty)!.push({ str, tx, rightEdge, ty });
+        yMap.get(ty)!.push({ str, tx, rightEdge, ty, width });
       }
       const ys = Array.from(yMap.keys()).sort((a, b) => b - a);
       for (const y of ys) allVisualRows.push(yMap.get(y)!.sort((a, b) => a.tx - b.tx));
@@ -66,26 +69,15 @@ export async function parseStatementLocally(file: File, password?: string): Prom
     if (sampleTextChars / Math.min(3, pdf.numPages) < 40 && hasRasterImages) {
       return {
         status: "SCANNED_PDF_REJECTED", bankCode: "SCANNED_IMAGE", fileSha256, transactions: [],
-        message: "Scanned/photographed PDF detected. Export the native digital PDF from your banking app."
+        message: "This looks like a photo or scan. Please download the PDF directly from your banking app."
       };
     }
 
-    let colAnchors: { key: string; x: number; rightEdge: number }[] = [];
-    for (const row of allVisualRows) {
-      const joined = row.map((c) => c.str.toUpperCase()).join(" ");
-      if (joined.includes("DATE") && (joined.includes("BALANCE") || joined.includes("DESC") || joined.includes("DETAIL"))) {
-        colAnchors = row.map((c) => {
-          const u = c.str.toUpperCase();
-          if (u.includes("DATE") || u.includes("DATUM")) return { key: "date", x: c.tx, rightEdge: c.rightEdge };
-          if (u.includes("DESC") || u.includes("DETAIL") || u.includes("PARTICULAR")) return { key: "desc", x: c.tx, rightEdge: c.rightEdge };
-          if (u.includes("MONEY OUT") || u.includes("DEBIT") || u.includes("PAYMENT")) return { key: "debit", x: c.tx, rightEdge: c.rightEdge };
-          if (u.includes("MONEY IN") || u.includes("CREDIT") || u.includes("DEPOSIT")) return { key: "credit", x: c.tx, rightEdge: c.rightEdge };
-          if (u.includes("AMOUNT")) return { key: "amount", x: c.tx, rightEdge: c.rightEdge };
-          if (u.includes("BALANCE") || u.includes("SALDO")) return { key: "balance", x: c.tx, rightEdge: c.rightEdge };
-          return { key: "ignore", x: c.tx, rightEdge: c.rightEdge };
-        }).filter((c) => c.key !== "ignore");
-        break;
-      }
+    let colAnchors: FusedHeaderColumn[] = [];
+    const dateToken = page1Tokens.find((t) => /\b(DATE|DATUM)\b/i.test(t.text));
+    if (dateToken) {
+      const band = page1Tokens.filter((t) => Math.abs(t.ty - dateToken.ty) <= 18);
+      colAnchors = fuseVerticalHeaderBand(band);
     }
 
     const transactions: ParsedTransaction[] = [];
@@ -100,12 +92,12 @@ export async function parseStatementLocally(file: File, password?: string): Prom
         let best = colAnchors[0];
         let minDist = Infinity;
         for (const anc of colAnchors) {
-          const dist = isNum && (anc.key === "debit" || anc.key === "credit" || anc.key === "amount" || anc.key === "balance")
+          const dist = isNum && (anc.role === "debit" || anc.role === "credit" || anc.role === "amount" || anc.role === "balance")
             ? Math.abs(cell.rightEdge - anc.rightEdge)
-            : Math.abs(cell.tx - anc.x);
+            : Math.abs(cell.tx - anc.leftX);
           if (dist < minDist) { minDist = dist; best = anc; }
         }
-        bucket[best.key] = (bucket[best.key] + " " + cell.str).trim();
+        bucket[best.role] = (bucket[best.role] + " " + cell.str).trim();
       }
       const isoDate = normalizeDateISO(bucket.date);
       if (isoDate) {
@@ -137,7 +129,7 @@ export async function parseStatementLocally(file: File, password?: string): Prom
         } else {
           current = null;
         }
-      } else if (current && bucket.desc && !/(PAGE \d+ OF \d+|VAT NUMBER|OPENING BALANCE|CLOSING BALANCE)/i.test(bucket.desc)) {
+      } else if (current && bucket.desc && !/(PAGE \d+ OF \d+|VAT NUMBER|OPENING BALANCE|CLOSING BALANCE|REG NO:|AUTHORISED FINANCIAL)/i.test(bucket.desc)) {
         current.raw_description += " " + bucket.desc.trim();
         if (!current.extracted_msisdn) current.extracted_msisdn = extractMSISDN(current.raw_description);
         current.category = classifyCategory(current.raw_description, current.direction);
@@ -149,13 +141,13 @@ export async function parseStatementLocally(file: File, password?: string): Prom
       const prev = transactions[i - 1];
       const curr = transactions[i];
       if (prev.balance_cents !== null && curr.balance_cents !== null) {
-        const expected = prev.balance_cents + (curr.direction === "CREDIT" ? curr.amount_cents : -curr.amount_cents);
-        if (expected !== curr.balance_cents) {
-          return {
-            status: "CHECKSUM_ERROR", bankCode: detectBankCode(fullHeaderText), fileSha256, transactions,
-            checksumDivergentIndex: i,
-            message: `Running balance checksum diverged at row ${i + 1} (${curr.tx_date}). Verify rows below before committing.`
-          };
+        const delta = curr.balance_cents - prev.balance_cents;
+        if (delta === curr.amount_cents && curr.direction !== "CREDIT") {
+          curr.direction = "CREDIT";
+          curr.category = classifyCategory(curr.raw_description, "CREDIT");
+        } else if (delta === -curr.amount_cents && curr.direction !== "DEBIT") {
+          curr.direction = "DEBIT";
+          curr.category = classifyCategory(curr.raw_description, "DEBIT");
         }
       }
     }

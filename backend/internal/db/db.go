@@ -1,32 +1,33 @@
 package db
 
 import (
-    "context"
-    "database/sql"
-    "time"
+	"context"
+	"database/sql"
+	"time"
 
-    _ "github.com/lib/pq"
+	_ "github.com/lib/pq"
 )
 
 func ConnectAndMigrate(connStr string) (*sql.DB, error) {
-    conn, err := sql.Open("postgres", connStr)
-    if err != nil {
-        return nil, err
-    }
-    conn.SetMaxOpenConns(5)
-    conn.SetMaxIdleConns(2)
-    conn.SetConnMaxLifetime(5 * time.Minute)
+	conn, err := sql.Open("postgres", connStr)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetMaxOpenConns(5)
+	conn.SetMaxIdleConns(2)
+	conn.SetConnMaxLifetime(5 * time.Minute)
 
-    ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-    defer cancel()
-    if err := conn.PingContext(ctx); err != nil {
-        return nil, err
-    }
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := conn.PingContext(ctx); err != nil {
+		return nil, err
+	}
 
-    schema := `
+	schema := `
 CREATE TABLE IF NOT EXISTS groups (
     id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     slug               TEXT UNIQUE NOT NULL,
+    short_code         TEXT,
     name               TEXT NOT NULL,
     archetype          TEXT NOT NULL CHECK (archetype IN ('SAVINGS_DEC', 'ROSCA', 'BURIAL', 'INVESTMENT')),
     contribution_cents BIGINT NOT NULL CHECK (contribution_cents > 0),
@@ -38,6 +39,9 @@ CREATE TABLE IF NOT EXISTS groups (
     eu_popia_consent   BOOLEAN NOT NULL DEFAULT false,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS short_code TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_short_code ON groups(short_code);
+UPDATE groups SET short_code = UPPER(RPAD(SUBSTRING(REGEXP_REPLACE(name, '[^a-zA-Z0-9]', '', 'g') FROM 1 FOR 4), 4, 'X')) || '-' || UPPER(RIGHT(slug, 2)) WHERE short_code IS NULL;
 CREATE TABLE IF NOT EXISTS members (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     group_id            UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -113,8 +117,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_tx_group_date ON bank_transactions(group_id, tx_date DESC);
 CREATE INDEX IF NOT EXISTS idx_obligations_fifo ON member_obligations(member_id, period_month ASC, obligation_type ASC);
 `
-    if _, err := conn.ExecContext(ctx, schema); err != nil {
-        return nil, err
-    }
-    return conn, nil
+	if _, err := conn.ExecContext(ctx, schema); err != nil {
+		return nil, err
+	}
+	return conn, nil
 }

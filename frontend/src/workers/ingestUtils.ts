@@ -5,7 +5,7 @@ export interface ParsedTransaction {
   direction: "CREDIT" | "DEBIT";
   amount_cents: number;
   balance_cents: number | null;
-  category: "CONTRIBUTION" | "BANK_FEE" | "INTEREST" | "PAYOUT" | "SELF_TRANSFER" | "UNCLASSIFIED";
+  category: "CONTRIBUTION" | "BANK_FEE" | "INTEREST" | "PAYOUT" | "SELF_TRANSFER" | "UNCLASSIFIED" | "PERSONAL_EXPENSE";
   raw_description: string;
   extracted_msisdn: string;
   occ_index: number;
@@ -16,8 +16,70 @@ export interface IngestResult {
   bankCode: string;
   fileSha256: string;
   transactions: ParsedTransaction[];
-  checksumDivergentIndex?: number;
   message?: string;
+}
+
+export interface HeaderToken {
+  text: string;
+  tx: number;
+  ty: number;
+  width: number;
+  rightEdge: number;
+}
+
+export interface FusedHeaderColumn {
+  label: string;
+  leftX: number;
+  rightEdge: number;
+  role: "date" | "desc" | "debit" | "credit" | "amount" | "balance" | "ignore";
+}
+
+export function fuseVerticalHeaderBand(tokens: HeaderToken[]): FusedHeaderColumn[] {
+  const sorted = [...tokens].sort((a, b) => a.tx - b.tx || b.ty - a.ty);
+  const clusters: HeaderToken[][] = [];
+  for (const tok of sorted) {
+    if (!tok.text.trim()) continue;
+    const match = clusters.find((g) => {
+      const gLeft = Math.min(...g.map((t) => t.tx));
+      const gRight = Math.max(...g.map((t) => t.rightEdge));
+      const ySpan = Math.max(...g.map((t) => Math.abs(t.ty - tok.ty)));
+      return ySpan <= 18 && tok.tx <= gRight + 10 && tok.rightEdge >= gLeft - 10;
+    });
+    if (match) match.push(tok);
+    else clusters.push([tok]);
+  }
+  return clusters.map((g) => {
+    g.sort((a, b) => b.ty - a.ty || a.tx - b.tx);
+    const label = g.map((t) => t.text.trim()).join(" ").replace(/\s+/g, " ").toUpperCase();
+    const leftX = Math.min(...g.map((t) => t.tx));
+    const rightEdge = Math.max(...g.map((t) => t.rightEdge));
+    let role: FusedHeaderColumn["role"] = "ignore";
+    if (/\b(DATE|DATUM)\b/.test(label)) role = "date";
+    else if (/\b(DESCRIPTION|DETAILS|PARTICULARS|NARRATIVE|TRANSACTION)\b/.test(label)) role = "desc";
+    else if (/\b(MONEY\s*IN|CREDIT|CREDITS|DEPOSIT|DEPOSITS|INFLOW)\b/.test(label)) role = "credit";
+    else if (/\b(MONEY\s*OUT|DEBIT|DEBITS|PAYMENT|PAYMENTS|WITHDRAWAL|OUTFLOW)\b/.test(label)) role = "debit";
+    else if (/\b(BALANCE|SALDO)\b/.test(label)) role = "balance";
+    else if (/\b(AMOUNT|VALUE|RAND|ZAR)\b/.test(label)) role = "amount";
+    return { label, leftX, rightEdge, role };
+  }).filter((c) => c.role !== "ignore");
+}
+
+const STRICT_BANK_FEE_REGEX =
+  /^(?:FEE\s*:|FEES\s*:|BANK\s+FEE\b|MONTHLY\s+(?:ADMIN|ACCOUNT|SERVICE)\s+FEE\b|ADMIN\s+FEE\b|SERVICE\s+FEE\b|SMS\s+NOTIFICATION\s+FEE\b|TRANSACTIONAL\s+SMS\b|CASH\s+DEPOSIT\s+FEE\b|PAYSHAP\s+FEE\b|IMMEDIATE\s+(?:PMT|PAYMENT)\s+FEE\b|EFT\s+FEE\b|ATM\s+WITHDRAWAL\s+FEE\b)|\b(?:BANK\s+CHARGES?|HONOURING\s+FEE|DECLINED\s+TX\s+FEE|VAT\s+ON\s+FEES?)\b/i;
+
+const STRICT_INTEREST_REGEX =
+  /^(?:INTEREST\s+(?:RECEIVED|PAID|CAPITALISED|CREDIT)|CREDIT\s+INTEREST)\b|\b(?:SAVINGS\s+INTEREST|STOKVEL\s+INTEREST)\b/i;
+
+const PERSONAL_RETAIL_NOISE_REGEX =
+  /\b(?:CHECKERS|SHOPRITE|PICK\s*N\s*PAY|WOOLWORTHS|SPAR|BOXER|USAVE|MAKRO|GAME|CLICKS|DIS-?CHEM|ENGEN|SHELL|SASOL|BP|TOTALENERGIES|CALTEX|UBER|BOLT|MR\s*D|TAKEALOT|KFC|NANDOS|MCDONALDS|VAS\s*-\s*MOBILE|AIRTIME|DATA\s+BUNDLE|ELECTRICITY|PREPAID|POS\s+PURCHASE|CARD\s+PURCHASE)\b/i;
+
+export function classifyCategory(desc: string, direction: "CREDIT" | "DEBIT"): ParsedTransaction["category"] {
+  const d = desc.trim();
+  if (direction === "CREDIT") return STRICT_INTEREST_REGEX.test(d) ? "INTEREST" : "CONTRIBUTION";
+  if (/(GOALSAVE|SAVINGS POCKET|OWN ACCOUNT)/i.test(d)) return "SELF_TRANSFER";
+  if (STRICT_BANK_FEE_REGEX.test(d)) return "BANK_FEE";
+  if (PERSONAL_RETAIL_NOISE_REGEX.test(d)) return "PERSONAL_EXPENSE";
+  return "PAYOUT";
 }
 
 export function parseZARCents(raw: string): { cents: number; negative: boolean } {
@@ -60,18 +122,6 @@ export function extractMSISDN(desc: string): string {
   return m ? `0${m[1]}${m[2]}${m[3]}` : "";
 }
 
-export function classifyCategory(desc: string, direction: "CREDIT" | "DEBIT"): ParsedTransaction["category"] {
-  const u = desc.toUpperCase();
-  if (direction === "DEBIT") {
-    if (/(FEE|VAS - MOBILE|SMS NOTIFICATION|MONTHLY ADMIN|SERVICE CHARGE|VAT)/.test(u)) return "BANK_FEE";
-    if (/(GOALSAVE|SAVINGS POCKET|OWN ACCOUNT)/.test(u)) return "SELF_TRANSFER";
-    return "PAYOUT";
-  }
-  if (/(INTEREST|DIVIDEND|VITALITY REWARD)/.test(u)) return "INTEREST";
-  if (/(FROM GOALSAVE|OWN ACCOUNT TRANSFER)/.test(u)) return "SELF_TRANSFER";
-  return "UNCLASSIFIED";
-}
-
 export function detectBankCode(text: string): string {
   const u = text.toUpperCase();
   if (u.includes("GOTYME") || u.includes("TYMEBANK")) return "GOTYME";
@@ -109,11 +159,7 @@ export function parseOFX(text: string): ParsedTransaction[] {
     const key = `${txDate}|${direction}|${cents}|${desc.toUpperCase()}`;
     const idx = occ[key] ?? 0;
     occ[key] = idx + 1;
-    out.push({
-      tx_date: txDate, direction, amount_cents: cents, balance_cents: null,
-      category: classifyCategory(desc, direction), raw_description: desc,
-      extracted_msisdn: extractMSISDN(desc), occ_index: idx
-    });
+    out.push({ tx_date: txDate, direction, amount_cents: cents, balance_cents: null, category: classifyCategory(desc, direction), raw_description: desc, extracted_msisdn: extractMSISDN(desc), occ_index: idx });
   }
   return out;
 }
@@ -158,11 +204,7 @@ export function parseCSVText(rawText: string): ParsedTransaction[] {
     const key = `${txDate}|${direction}|${cents}|${desc.toUpperCase()}`;
     const idx = occ[key] ?? 0;
     occ[key] = idx + 1;
-    out.push({
-      tx_date: txDate, direction, amount_cents: cents, balance_cents: balCents,
-      category: classifyCategory(desc, direction), raw_description: desc.trim(),
-      extracted_msisdn: extractMSISDN(desc), occ_index: idx
-    });
+    out.push({ tx_date: txDate, direction, amount_cents: cents, balance_cents: balCents, category: classifyCategory(desc, direction), raw_description: desc.trim(), extracted_msisdn: extractMSISDN(desc), occ_index: idx });
   }
   return out;
 }

@@ -5,3 +5,5 @@ backend/stokvel-api.exe
 *.pdf
 *.csv
 *.ofx
+
+*.ps1
